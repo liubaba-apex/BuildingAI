@@ -437,14 +437,11 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
         // 准备第三方对话上下文
         const enhancedDto = await this.prepareThirdPartyContext(dto, conversationRecord, platform);
 
-        // 获取用户消息
-        const userMessage = this.extractUserMessage(dto);
-
         // 调用第三方平台 API
         const result = await this.callThirdPartyAPI(
             platform,
             config,
-            userMessage,
+            dto,
             enhancedDto.conversationId,
         );
 
@@ -540,14 +537,11 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
                 platform,
             );
 
-            // 获取用户消息
-            const userMessage = this.extractUserMessage(dto);
-
             // 调用第三方平台流式 API
             const result = await this.callThirdPartyStreamAPI(
                 platform,
                 config,
-                userMessage,
+                dto,
                 enhancedDto.conversationId,
                 res,
                 agent,
@@ -640,7 +634,7 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
     private async callThirdPartyAPI(
         platform: string,
         config: ThirdPartyConfig,
-        query: string,
+        dto: AgentChatDto,
         conversationId?: string,
     ): Promise<{
         response: string;
@@ -649,9 +643,9 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
     }> {
         switch (platform) {
             case "dify":
-                return await this.callDifyAPI(config, query, conversationId);
+                return await this.callDifyAPI(config, dto, conversationId);
             case "coze":
-                return await this.callCozeAPI(config, query, conversationId);
+                return await this.callCozeAPI(config, dto, conversationId);
             default:
                 throw new BadRequestException(`不支持的第三方平台: ${platform}`);
         }
@@ -661,7 +655,7 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
      * 调用第三方平台流式 API
      * @param platform 平台类型
      * @param config 第三方配置
-     * @param query 用户查询
+     * @param dto 聊天DTO
      * @param conversationId 会话ID
      * @param res 响应对象
      * @param agent 智能体配置（用于获取自动追问配置）
@@ -669,7 +663,7 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
     private async callThirdPartyStreamAPI(
         platform: string,
         config: ThirdPartyConfig,
-        query: string,
+        dto: AgentChatDto,
         conversationId: string | undefined,
         res: Response,
         agent?: Agent,
@@ -680,9 +674,9 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
     }> {
         switch (platform) {
             case "dify":
-                return await this.callDifyStreamAPI(config, query, conversationId, res, agent);
+                return await this.callDifyStreamAPI(config, dto, conversationId, res, agent);
             case "coze":
-                return await this.callCozeStreamAPI(config, query, conversationId, res);
+                return await this.callCozeStreamAPI(config, dto, conversationId, res);
             default:
                 throw new BadRequestException(`不支持的第三方平台: ${platform}`);
         }
@@ -693,7 +687,7 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
      */
     private async callDifyAPI(
         config: ThirdPartyConfig,
-        query: string,
+        dto: AgentChatDto,
         conversationId?: string,
     ): Promise<{
         response: string;
@@ -701,6 +695,9 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
         tokenUsage?: AgentChatResponse["tokenUsage"];
     }> {
         const url = `${config.baseURL}/chat-messages`;
+
+        // 获取用户消息
+        const query = this.extractUserMessage(dto);
 
         const body: Record<string, any> = {
             inputs: {},
@@ -748,14 +745,14 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
     /**
      * 调用 Dify 流式 API
      * @param config 第三方配置
-     * @param query 用户查询
+     * @param dto 聊天DTO
      * @param conversationId 会话ID
      * @param res 响应对象
      * @param agent 智能体配置（用于获取自动追问配置）
      */
     private async callDifyStreamAPI(
         config: ThirdPartyConfig,
-        query: string,
+        dto: AgentChatDto,
         conversationId: string | undefined,
         res: Response,
         agent?: Agent,
@@ -765,6 +762,9 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
         tokenUsage?: AgentChatResponse["tokenUsage"];
     }> {
         const url = `${config.baseURL}/chat-messages`;
+
+        // 获取用户消息
+        const query = this.extractUserMessage(dto);
 
         const body: Record<string, any> = {
             inputs: {},
@@ -980,7 +980,7 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
      */
     private async callCozeAPI(
         config: ThirdPartyConfig,
-        query: string,
+        dto: AgentChatDto,
         conversationId?: string,
     ): Promise<{
         response: string;
@@ -989,18 +989,86 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
     }> {
         const url = `${config.baseURL}/v3/chat`;
 
+        // 构建 additional_messages，包含所有对话历史
+        const additionalMessages: Array<{
+            role: string;
+            content: string;
+            content_type: string;
+        }> = [];
+
+        // 遍历所有消息构建对话历史
+        for (const message of dto.messages) {
+            // 检查 content 是否为数组（多模态内容）
+            if (Array.isArray(message.content)) {
+                const contentParts = message.content;
+                const textParts: string[] = [];
+                const fileParts: Array<{ type: string; file_url: string; file_name?: string }> = [];
+
+                // 分离文本和文件
+                for (const part of contentParts) {
+                    if (part.type === "text" && part.text) {
+                        textParts.push(part.text);
+                    } else if (part.type === "file_url" && part.url) {
+                        fileParts.push({
+                            type: "file",
+                            file_url: part.url,
+                            file_name: part.name,
+                        });
+                    } else if (part.type === "image_url" && part.image_url?.url) {
+                        fileParts.push({
+                            type: "image",
+                            file_url: part.image_url.url,
+                        });
+                    }
+                }
+
+                // 如果有文件，使用 object_string 格式
+                if (fileParts.length > 0) {
+                    const objectStringContent: Array<any> = [];
+
+                    // 添加文本部分
+                    if (textParts.length > 0) {
+                        objectStringContent.push({
+                            type: "text",
+                            text: textParts.join("\n"),
+                        });
+                    }
+
+                    // 添加文件部分
+                    for (const file of fileParts) {
+                        objectStringContent.push(file);
+                    }
+
+                    additionalMessages.push({
+                        role: message.role,
+                        content: JSON.stringify(objectStringContent),
+                        content_type: "object_string",
+                    });
+                } else {
+                    // 只有文本，使用 text 格式
+                    additionalMessages.push({
+                        role: message.role,
+                        content: textParts.join("\n"),
+                        content_type: "text",
+                    });
+                }
+            } else {
+                // 纯文本消息
+                const textContent = extractTextFromMessageContent(message.content);
+                additionalMessages.push({
+                    role: message.role,
+                    content: textContent,
+                    content_type: "text",
+                });
+            }
+        }
+
         const body: Record<string, any> = {
             bot_id: config.appId || config.extendedConfig?.botId,
             user_id: "buildingai-user",
             stream: false,
             auto_save_history: true,
-            additional_messages: [
-                {
-                    role: "user",
-                    content: query,
-                    content_type: "text",
-                },
-            ],
+            additional_messages: additionalMessages,
         };
 
         if (conversationId) {
@@ -1008,6 +1076,8 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
         }
 
         this.logger.debug(`[Coze] Calling API: ${url}`);
+        this.logger.debug(`[Coze] body: ${JSON.stringify(body)}`);
+        this.logger.debug(`[Coze] conversationId: ${conversationId}`);
 
         const response = await fetch(url, {
             method: "POST",
@@ -1049,7 +1119,7 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
      */
     private async callCozeStreamAPI(
         config: ThirdPartyConfig,
-        query: string,
+        dto: AgentChatDto,
         conversationId: string | undefined,
         res: Response,
     ): Promise<{
@@ -1058,19 +1128,88 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
         tokenUsage?: AgentChatResponse["tokenUsage"];
     }> {
         const url = `${config.baseURL}/v3/chat`;
+        this.logger.debug(`[Coze] Calling Stream API dto: ${JSON.stringify(dto)}`);
+
+        // 构建 additional_messages，包含所有对话历史
+        const additionalMessages: Array<{
+            role: string;
+            content: string;
+            content_type: string;
+        }> = [];
+
+        // 遍历所有消息构建对话历史
+        for (const message of dto.messages) {
+            // 检查 content 是否为数组（多模态内容）
+            if (Array.isArray(message.content)) {
+                const contentParts = message.content;
+                const textParts: string[] = [];
+                const fileParts: Array<{ type: string; file_url: string; file_name?: string }> = [];
+
+                // 分离文本和文件
+                for (const part of contentParts) {
+                    if (part.type === "text" && part.text) {
+                        textParts.push(part.text);
+                    } else if (part.type === "file_url" && part.url) {
+                        fileParts.push({
+                            type: "file",
+                            file_url: part.url,
+                            file_name: part.name,
+                        });
+                    } else if (part.type === "image_url" && part.image_url?.url) {
+                        fileParts.push({
+                            type: "image",
+                            file_url: part.image_url.url,
+                        });
+                    }
+                }
+
+                // 如果有文件，使用 object_string 格式
+                if (fileParts.length > 0) {
+                    const objectStringContent: Array<any> = [];
+
+                    // 添加文本部分
+                    if (textParts.length > 0) {
+                        objectStringContent.push({
+                            type: "text",
+                            text: textParts.join("\n"),
+                        });
+                    }
+
+                    // 添加文件部分
+                    for (const file of fileParts) {
+                        objectStringContent.push(file);
+                    }
+
+                    additionalMessages.push({
+                        role: message.role,
+                        content: JSON.stringify(objectStringContent),
+                        content_type: "object_string",
+                    });
+                } else {
+                    // 只有文本，使用 text 格式
+                    additionalMessages.push({
+                        role: message.role,
+                        content: textParts.join("\n"),
+                        content_type: "text",
+                    });
+                }
+            } else {
+                // 纯文本消息
+                const textContent = extractTextFromMessageContent(message.content);
+                additionalMessages.push({
+                    role: message.role,
+                    content: textContent,
+                    content_type: "text",
+                });
+            }
+        }
 
         const body: Record<string, any> = {
             bot_id: config.appId || config.extendedConfig?.botId,
             user_id: "buildingai-user",
             stream: true,
             auto_save_history: true,
-            additional_messages: [
-                {
-                    role: "user",
-                    content: query,
-                    content_type: "text",
-                },
-            ],
+            additional_messages: additionalMessages,
         };
 
         if (conversationId) {
@@ -1078,6 +1217,8 @@ export class ThirdPartyIntegrationHandler implements IThirdPartyIntegrationHandl
         }
 
         this.logger.debug(`[Coze] Calling Stream API: ${url}`);
+        this.logger.debug(`[Coze] body: ${JSON.stringify(body)}`);
+        this.logger.debug(`[Coze] conversationId: ${conversationId}`);
 
         const response = await fetch(url, {
             method: "POST",
