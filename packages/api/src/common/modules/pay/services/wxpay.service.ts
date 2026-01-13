@@ -172,10 +172,13 @@ export class WxPayService {
      * @returns 解密后的消息体
      */
     async decryptPayNotifyBody(body: Record<string, any>) {
+        console.log("decryptPayNotifyBody");
         const wechatPayService = await this.payfactoryService.getPayService(
             PayConfigPayType.WECHAT,
         );
+        console.log("decryptPayNotifyBody wechatPayService:", wechatPayService);
         const result = wechatPayService.decryptNotifyBody(body.resource);
+        console.log("decryptPayNotifyBody result:", result);
         return result;
     }
 

@@ -136,11 +136,14 @@ export class PayService extends BaseService<Payconfig> {
             const wechatPayService = await this.payfactoryService.getPayService(
                 PayConfigPayType.WECHAT,
             );
+            console.log("wechatPayService:", wechatPayService);
             const result = await wechatPayService.notifyPay(params);
+            console.log("result:", result);
             if (!result) {
                 throw new Error("验证签名失败");
             }
             const decryptBody = await this.wxpayService.decryptPayNotifyBody(body);
+            console.log("decryptBody:", decryptBody);
             const method = decryptBody.attach;
             const analysisParams: WechatPayNotifyAnalysisParams = {
                 outTradeNo: decryptBody.out_trade_no,
@@ -149,6 +152,7 @@ export class PayService extends BaseService<Payconfig> {
                 payer: decryptBody.payer,
                 amount: decryptBody.amount,
             };
+            console.log("analysisParams:", analysisParams);
             // 检查方法是否存在
             if ("function" === typeof this[method]) {
                 await this[method](analysisParams); // 动态调用
